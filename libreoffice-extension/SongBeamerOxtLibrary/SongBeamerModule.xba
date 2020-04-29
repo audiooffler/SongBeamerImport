@@ -1,0 +1,1128 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE script:module PUBLIC "-//OpenOffice.org//DTD OfficeDocument 1.0//EN" "module.dtd">
+<script:module xmlns:script="http://openoffice.org/2000/script" script:name="SongBeamerModule" script:language="StarBasic" script:moduleType="normal">&apos; Martin Spindler, St.-Pauli-Gemeinde, Ev.-Luth. Kirchspiel Dresden-Neustadt
+&apos; sp.martin@gmx.net
+&apos; V1.0 2020-04-23
+&apos;
+&apos; TODOs:
+&apos;- SongBeamer HTML support http://wiki.songbeamer.de/index.php?title=SongBeamer_HTML
+
+Option VbaSupport 1
+
+Private Function IsMacOrLinuxOrUnix() As Boolean
+	If GetGuiType() = 1 Then
+		IsMacOrLinuxOrUnix = False
+	Else
+		IsMacOrLinuxOrUnix = True
+	End If
+End Function
+
+&apos;since open office handles file paths in url format only use &apos;/&apos;
+Private Function FileSeparator() As String
+        FileSeparator = &quot;/&quot;
+End Function
+
+&apos; https://stackoverflow.com/questions/4520184/how-to-detect-the-character-encoding-of-a-text-file
+Private Function GetTextFileEncoding(inputFile As String) As String
+    Dim iFileNum As Integer
+    Dim i As Integer
+    Dim buffer(4) As Byte
+    i = 0
+    iFileNum = FreeFile()
+    Open inputFile For Binary Access Read As iFileNum
+    Do While Not EOF(iFileNum) And i &lt; 4
+        Get #iFileNum, , buffer(i)
+        i = i + 1
+    Loop
+    Close iFileNum
+    If buffer(0) = &amp;H0 And buffer(1) = &amp;H0 And buffer(2) = &amp;HFE And buffer(3) = &amp;HFF Then
+        GetTextFileEncoding = &quot;UTF-32&quot; &apos; UTF-32: BOM is 00 00 FE FF (for BE) or FF FE 00 00 (for LE). (0, 0, 254, 255)
+    ElseIf buffer(0) = &amp;HEF And buffer(1) = &amp;HBB And buffer(2) = &amp;HBF Then
+        GetTextFileEncoding = &quot;UTF-8&quot; &apos; UTF -8: BOM is EF BB BF
+    ElseIf (buffer(0) = &amp;HFE And buffer(1) = &amp;HFF) Or (buffer(1) = &amp;HFE And buffer(0) = &amp;HFF) Then
+        GetTextFileEncoding = &quot;UTF-16 &quot; &apos; UTF-16: BOM is FE FF (for BE) or FF FE (for LE)
+    Else
+        GetTextFileEncoding = &quot;windows-1252	&quot; &apos;assume ISO-8859-1 or the closely related Windows-1252 (&apos;ANSI&apos;)
+    End If
+End Function
+
+&apos;helper for parsing property lines like #Title=N_her Gott zu Dir by givin &quot;title&quot; or &quot;Title&quot; and the whole line, returns just the right part after the &apos;=&apos; sign
+Private Function GetSngPropertyValueOfLine(propertyName As String, line As String) As String
+    Dim trimmedLine As String
+    Dim keyValuePair As Variant
+    If Len(line) &lt; 1 Or Len(propertyName) &lt; 1 Then
+        GetSngPropertyValueOfLine = &quot;&quot;
+        Exit Function
+    End If
+    keyValuePair = Split(Trim(line), &quot;=&quot;)
+    Dim compareWith As String
+    compareWith = Right(keyValuePair(0), Len(propertyName))
+    If LCase(compareWith) = LCase(propertyName) Then
+        GetSngPropertyValueOfLine = keyValuePair(1)
+    Else
+        GetSngPropertyValueOfLine = &quot;&quot;
+    End If
+End Function
+
+&apos;this will return an empty string if it is not a valid marker, else it returns the full marker name
+Private Function GetSongSectionMarkerOfLine(line As String) As String
+  Dim arr As Variant
+  Dim keyValue As Variant
+  Dim marker As Variant
+  
+    If Len(line) &lt; 1 Then
+        GetSongSectionMarkerOfLine = &quot;&quot;
+        Exit Function
+    End If
+  
+  If InStr(1, line, &quot;$$M=&quot;) Then
+    keyValue = Split(line, &quot;=&quot;)
+    GetSongSectionMarkerOfLine = keyValue(1)
+    Exit Function
+  End If
+  
+  keyValue = Split(line, &quot; &quot;)
+  arr = Array(&quot;unbekannt&quot;, &quot;unbenannt&quot;, &quot;unknown&quot;, &quot;intro&quot;, &quot;einleitung&quot;, &quot;vers&quot;, &quot;verse&quot;, &quot;strophe&quot;, &quot;pre-bridge&quot;, &quot;bridge&quot;, &quot;msc&quot;, &quot;pre-refrain&quot;, &quot;refrain&quot;, &quot;pre-chorus&quot;, &quot;chorus&quot;, &quot;pre-coda&quot;, &quot;zwischenspiel&quot;, &quot;instrumental&quot;, &quot;interlude&quot;, &quot;coda&quot;, &quot;schluss&quot;, &quot;ending&quot;, &quot;outro&quot;, &quot;teil&quot;, &quot;part&quot;, &quot;chor&quot;, &quot;solo&quot;)
+  For Each marker In arr
+    If _
+            LCase(keyValue(0)) = marker Or _
+            (Left(LCase(line), Len(marker)) = marker And Len(line) &lt; Len(marker) + 4) _
+            Or line Like &quot;#&quot; Or line Like &quot;##&quot; Or line Like &quot;#?&quot; Or line Like &quot;##?&quot; Then
+        GetSongSectionMarkerOfLine = line
+        Exit Function
+    End If
+  Next marker
+  GetSongSectionMarkerOfLine = &quot;&quot;
+End Function
+
+&apos;The &quot;SongBeamerFullText&quot; layout is a custom master slide for full sized text content, initialized at InitMasterLayouts
+Private Function GetCustomSlideMasterLayout(LayoutName As String, Optional ParentPresentation As Object) As Object
+    If IsMissing(ParentPresentation) Or ParentPresentation Is Nothing Then
+        Set ParentPresentation = thisComponent
+    End If
+
+    Dim oLayout As Object
+    For i = 0 To ParentPresentation.getMasterPages().getCount() - 1
+    	Set oLayout = ParentPresentation.getMasterPages().getByIndex(i)
+        If oLayout.Name = LayoutName Then
+            Set GetCustomSlideMasterLayout = oLayout
+            Exit Function
+        End If
+    Next i
+    Set GetCustomSlideMasterLayout = Nothing
+End Function
+
+&apos;iterates all slides and checks UserDefinedAttribute &quot;sectionIndex&quot; for the max integer value and returns that + 1
+Private Function GetNextFreeSectionIndex() As Integer
+	Dim oDoc
+	Dim slide As Object
+	Dim sectionIndex
+	Dim maxIndex As Integer
+	maxIndex = 0
+	oDoc = thisComponent
+	For i = 0 to oDoc.DrawPages.getCount() - 1
+		slide = oDoc.DrawPages.getByIndex(i)
+		If slide.UserDefinedAttributes.hasByName(&quot;sectionIndex&quot;) Then
+			sectionIndex = CInt(slide.UserDefinedAttributes.getByName(&quot;sectionIndex&quot;).Value)
+			If  sectionIndex &gt; maxIndex Then maxIndex = sectionIndex
+		End If
+	Next i
+	GetNextFreeSectionIndex = maxIndex + 1
+End Function
+
+&apos;index of first slide with the given section index (-1 if not found)
+Private Function GetSectionStart(sectionIndex As Integer) As Integer
+	Dim oDoc
+	oDoc = thisComponent
+	Dim slide As Object
+	GetSectionStart = -1
+	For i = oDoc.DrawPages.getCount() - 1 to 0 Step -1
+		slide = oDoc.DrawPages.getByIndex(i)
+			If slide.UserDefinedAttributes.hasByName(&quot;sectionIndex&quot;) Then
+				If CInt(slide.UserDefinedAttributes.getByName(&quot;sectionIndex&quot;).Value) = sectionIndex Then
+						GetSectionStart = i
+				End if
+			End If
+	Next i
+End Function
+
+&apos;search given slide and backwards in slides from given slide index number to find a section index information (-1 if none found)
+Private Function GetSectionIndexForSlide(slideNumer As Integer) As Integer
+	Dim oDoc
+	oDoc = thisComponent
+	Dim slide As Object
+	For i = slideNumer to 0 Step -1
+		slide = oDoc.DrawPages.getByIndex(i)
+			If slide.UserDefinedAttributes.hasByName(&quot;sectionIndex&quot;) Then
+				GetSectionIndexForSlide = CInt(slide.UserDefinedAttributes.getByName(&quot;sectionIndex&quot;).Value)
+				Exit Function
+			End If
+	Next i
+	GetSectionIndexForSlide = -1
+End Function
+
+&apos;looking up the section title at start of section (GetSectionStart), empty string if nothing found
+Private Function GetSectionTitle(sectionIndex As Integer) As String
+	Dim sectionStart As Integer
+	sectionStart = GetSectionStart(slideNumber)
+	If sectionStart &lt; 0 Then 
+		GetSectionTitle = &quot;&quot;
+		Exit Function
+	Else
+		Dim slide As Object
+		slide = thisComponent.DrawPages.getByIndex(i)
+			If slide.UserDefinedAttributes.hasByName(&quot;sectionName&quot;) Then
+				GetSectionTitle = slide.UserDefinedAttributes.getByName(&quot;sectionName&quot;).Value
+				Exit Function
+			End If
+	GetSectionTitle = &quot;&quot;
+	End If
+End Function
+
+Private Function GetSectionSlidesCount(sectionIndex As Integer) As Integer
+	Dim oDoc
+	Dim numSlidesInSection As Integer
+	Dim slide As Object
+	oDoc = thisComponent
+	&apos;iterate all slides
+	For i = 0 to oDoc.DrawPages.getCount() -1
+		slide = oDoc.DrawPages.getByIndex(i)
+		&apos; if section index was defined
+		If slide.UserDefinedAttributes.hasByName(&quot;sectionIndex&quot;) Then
+			&apos; if section index matches increase count
+			If CInt(slide.UserDefinedAttributes.getByName(&quot;sectionIndex&quot;).Value) = sectionIndex Then
+				numSlidesInSection = numSlidesInSection + 1
+			End if
+		End If
+	Next i
+	GetSectionSlidesCount = numSlidesInSection
+End Function
+
+&apos; creates a slide with the song title and proprties and a new PPT presentation section, returns index of new section
+Private Function AddNewSongAndTitleSlide(sectionTitle As String, titlesString As String, propertiesText As String, Optional bannerMode As Boolean) As Integer
+	Dim oDoc
+	oDoc = thisComponent
+
+    Dim newSlide As Object
+    If IsMissing(bannerMode) Then bannerMode = False
+    
+    If bannerMode Then
+        Set newSlide = oDoc.DrawPages.insertNewByIndex(oDoc.DrawPages.getCount())
+        newSlide.setMasterPage(GetCustomSlideMasterLayout(&quot;SongBeamerBannerTitle&quot;))
+        newSlide.Layout = 0
+    Else
+        Set newSlide = oDoc.DrawPages.insertNewByIndex(oDoc.DrawPages.getCount())
+        newSlide.setMasterPage(GetCustomSlideMasterLayout(&quot;Default&quot;))
+        newSlide.Layout = 0
+    End If
+    
+    Dim titleShape, authorCopyrightTextShape As Object
+    titleShape = newSlide.getByIndex(0)
+    titleShape.setString(titlesString)
+    authorCopyrightTextShape = newSlide.getByIndex(1)
+
+    If Len(propertiesText) &lt; 1 And bannerMode Then
+    	Dim doubleTitleSize As New com.sun.star.awt.Size
+    	doubleTitleSize.Width = titleShape.getSize().Width
+    	doubleTitleSize.Height = titleShape.getSize().Height * 2
+        titleShape.setSize (doubleTitleSize)
+        authorCopyrightTextShape.Visible = False
+    Else
+        authorCopyrightTextShape.setString(propertiesText)
+    End If
+    
+    If bannerMode Then
+		titleShape.CharHeight = 40
+      	authorCopyrightTextShape.CharHeight = 20
+    End If
+
+    If bannerMode Then
+        sectionTitle = &quot;‾&quot; &amp; &quot; &quot; &amp; sectionTitle &apos;Chr(175)
+    Else
+        sectionTitle = &quot;XXL &quot; &amp; sectionTitle
+    End If
+    
+    &apos;Slide name
+    newSlide.setName(sectionTitle)
+    
+    Dim notesPage As Object
+    Dim shape As Object
+    notesPage = newSlide.getNotesPage()
+    For i = 0 To notesPage.getCount() - 1
+    	shape = notesPage.getByIndex(i)
+    	if shape.ShapeType = &quot;com.sun.star.presentation.NotesShape&quot; Then
+    	shape.setString(sectionTitle)
+   	End If
+    Next i
+
+  &apos;  AddNewSongAndTitleSlide = ActivePresentation.SectionProperties.AddBeforeSlide(ActivePresentation.Slides.Count, sectionTitle)
+	Dim userData As Object
+	userData = newSlide.UserDefinedAttributes
+	Dim sectionIndex As Integer
+	sectionIndex = GetNextFreeSectionIndex()
+	Dim sectionIndexAttributeData As New com.sun.star.xml.AttributeData
+	sectionIndexAttributeData.Type=Integer
+	sectionIndexAttributeData.Value = sectionIndex
+	userData.insertByName(&quot;sectionIndex&quot;,sectionIndexAttributeData)
+	Dim sectionTitleAttributeData As New com.sun.star.xml.AttributeData
+	sectionTitleAttributeData.Type=CDATA
+	sectionTitleAttributeData.Value = sectionTitle
+	userData.insertByName(&quot;sectionName&quot;,sectionTitleAttributeData)
+	newSlide.UserDefinedAttributes = userData
+	AddNewSongAndTitleSlide = sectionIndex
+End Function
+
+&apos; creates a slide with the given song section (e.g. verse) content.
+Private Sub AddSongSectionSlide(text As String, markerOrNumber As String, Optional newSlideIndex As Integer, Optional bannerMode As Boolean)
+    Dim oDoc As Object
+    Dim newSlide As Object
+    Dim pptLayout As Object
+    
+    Set oDoc = thisComponent
+    
+    If IsMissing(newSlideIndex) Then newSlideIndex = -1
+    If IsMissing(bannerMode) Then bannerMode = False
+    
+    If newSlideIndex = -1 Then
+        newSlideIndex = oDoc.DrawPages.getCount()
+    End If
+    
+    If Len(markerOrNumber) &gt; 1 Then
+        If (LCase(markerOrNumber) Like &quot;refrain*&quot; Or LCase(markerOrNumber) Like &quot;chorus*&quot; Or LCase(markerOrNumber) Like &quot;*kehrreim*&quot;) Then
+            If bannerMode Then Set pptLayout = GetCustomSlideMasterLayout(&quot;SongBeamerBannerChorus&quot;) Else Set pptLayout = GetCustomSlideMasterLayout(&quot;SongBeamerFullChorus&quot;)
+        ElseIf (LCase(markerOrNumber) Like &quot;bridge*&quot; Or LCase(markerOrNumber) Like &quot;pre-*&quot; Or LCase(markerOrNumber) Like &quot;br&quot; &amp; ChrW(252) &amp; &quot;cke*&quot;) Then
+            If bannerMode Then Set pptLayout = GetCustomSlideMasterLayout(&quot;SongBeamerBannerBridge&quot;) Else Set pptLayout = GetCustomSlideMasterLayout(&quot;SongBeamerFullBridge&quot;)
+        Else
+            If bannerMode Then Set pptLayout = GetCustomSlideMasterLayout(&quot;SongBeamerBannerText&quot;) Else Set pptLayout = GetCustomSlideMasterLayout(&quot;SongBeamerFullText&quot;)
+        End If
+    Else
+        If bannerMode Then Set pptLayout = GetCustomSlideMasterLayout(&quot;SongBeamerBannerText&quot;) Else Set pptLayout = GetCustomSlideMasterLayout(&quot;SongBeamerFullText&quot;)
+    End If
+    
+ 	&apos; add new slide and do some basic stuff
+    Set newSlide = oDoc.DrawPages.insertNewByIndex(newSlideIndex)
+	newSlide.setMasterPage(pptLayout)
+	newSlide.Layout = 0
+	
+	 newSlide.setName(markerOrNumber)
+	
+	&apos; add marker to notes
+	Dim notesPage As Object
+    Dim shape As Object
+    notesPage = newSlide.getNotesPage()
+    For i = 0 To notesPage.getCount() - 1
+    	shape = notesPage.getByIndex(i)
+    	if shape.ShapeType = &quot;com.sun.star.presentation.NotesShape&quot; Then
+    	shape.setString(markerOrNumber)
+   	End If
+    Next i
+
+	&apos; set section index and title as xml data (copy from existing section searching backwards)
+	Dim sectionIndex As Integer
+	sectionIndex = GetSectionIndexForSlide(newSlideIndex)
+	If sectionIndex &gt;-1 Then
+		Dim userData As Object
+		Dim sectionName As String
+		userData = newSlide.UserDefinedAttributes
+		sectionName = GetSectionTitle(sectionIndex)
+		Dim sectionIndexAttributeData As New com.sun.star.xml.AttributeData
+		sectionIndexAttributeData.Type=Integer
+		sectionIndexAttributeData.Value = sectionIndex
+		userData.insertByName(&quot;sectionIndex&quot;,sectionIndexAttributeData)
+		Dim sectionTitleAttributeData As New com.sun.star.xml.AttributeData
+		sectionTitleAttributeData.Type=CDATA
+		sectionTitleAttributeData.Value = sectionName
+		userData.insertByName(&quot;sectionName&quot;,sectionTitleAttributeData)
+		newSlide.UserDefinedAttributes = userData
+	End If
+	
+	&apos; set marker name xml data
+	Dim userDataM As Object
+	Dim markerAttributeData As New com.sun.star.xml.AttributeData
+	userDataM = newSlide.UserDefinedAttributes
+	markerAttributeData.Type=CDATA
+	markerAttributeData.Value = markerOrNumber
+	userDataM.insertByName(&quot;marker&quot;,markerAttributeData)
+	newSlide.UserDefinedAttributes = userDataM
+    
+    Dim content
+    Dim firstNotWhitespaceIndexInText As Integer
+    Dim lines As Variant
+    Dim currentLine As String
+    Dim lineIdx As Integer
+    Dim numLeadingTabs As Integer
+    Dim lineColor As Long
+    Dim lineDelimiterForOutput As String
+    If (bannerMode) Then lineDelimiterForOutput = &quot; / &quot; Else lineDelimiterForOutput = vbLf
+    
+    &apos; remove leading emty lines and whitespaces from content, replace crlf linebreaks with lf, split into lines
+    For firstNotWhitespaceIndexInText = 1 To Len(text)
+    If Asc(Mid(text, firstNotWhitespaceIndexInText, 1)) &gt; 32 Then Exit For
+    Next firstNotWhitespaceIndexInText
+    lines = Split(Replace(Right(text, Len(text) - firstNotWhitespaceIndexInText + 1), vbCrLf, vbLf), vbLf)
+    
+    Dim textShape As Object
+    textShape = newSlide.getByIndex(1)
+    newSlide.getByIndex(0).Visible = False &apos; hide title shape
+    
+    Dim normalFontSize As Integer
+    normalFontSize = 36
+    textShape.CharHeight = normalFontSize
+    
+    
+    For lineIdx = 0 To UBound(lines)
+        numLeadingTabs = 0
+        currentLine = lines(lineIdx)
+        While Mid(currentLine, numLeadingTabs + 1, 1) = vbTab And numLeadingTabs &lt; Len(currentLine)
+            numLeadingTabs = numLeadingTabs + 1
+        Wend
+        Select Case numLeadingTabs
+            Case 1: lineColor = RGB(255,0,0)&apos;blue
+            Case 2: lineColor = RGB(226, 43, 138) &apos;BlueViolet, see https://www.w3schools.com/colors/colors_names.asp
+            Case 3: lineColor = RGB(0, 0, 139) &apos;DarkRed
+            Case Else: lineColor = RGB(0,0,0)&apos;black
+        End Select
+        
+        Dim textCursor As Object
+        
+        &apos;no tab indents in banner mode
+        If (bannerMode) Then
+            currentLine = Replace(currentLine, vbTab, &quot;&quot;)
+        End If
+        If lineIdx &lt; UBound(lines) Then currentLine = currentLine &amp; lineDelimiterForOutput &apos; no line delimiter for very last line
+        If Len(currentLine) &gt; 0 Then
+            &apos;append text and do formating
+            textCursor = textShape.createTextCursorByRange(textShape.getEnd())
+            textShape.insertString(textCursor, currentLine ,False)
+            textCursor.goLeft(Len(currentLine), True)
+            textCursor.CharColor = lineColor
+            If Not bannerMode And numLeadingTabs &gt; 0 Then
+            	 textCursor.CharHeight = normalFontSize - 6
+           	Else
+           		&apos;textCursor.CharHeight = normalFontSize 
+           	End If
+        End If
+    Next lineIdx
+    &apos;if 4, 3 or 2 delimiters after another, replace by one, if ending with delimiter delete that
+    If (bannerMode) Then
+    	Dim oDescriptor as Object
+    	oDescriptor = newSlide.createReplaceDescriptor()
+		oDescriptor.SearchString = lineDelimiterForOutput &amp; lineDelimiterForOutput &amp; lineDelimiterForOutput &amp; lineDelimiterForOutput
+		oDescriptor.ReplaceString = lineDelimiterForOutput
+		newSlide.replaceAll(oDescriptor)
+		oDescriptor.SearchString = lineDelimiterForOutput &amp; lineDelimiterForOutput &amp; lineDelimiterForOutput
+		oDescriptor.ReplaceString = lineDelimiterForOutput
+		newSlide.ReplaceAll(oDescriptor)
+		oDescriptor.SearchString = lineDelimiterForOutput &amp; lineDelimiterForOutput
+		oDescriptor.ReplaceString = lineDelimiterForOutput
+		newSlide.ReplaceAll(oDescriptor)
+		newSlide.ReplaceAll(oDescriptor)
+		oDescriptor.SearchString = lineDelimiterForOutput
+		oDescriptor.ReplaceString = lineDelimiterForOutput
+		newSlide.ReplaceAll(oDescriptor)
+		textCursor = textShape.createTextCursorByRange(textShape.getEnd())
+		textCursor.goLeft(1, True)
+		If textCursor.getString() = lineDelimiterForOutput Then textCursor.setString(&quot;&quot;)
+    End If
+    
+	textShape.TextHorizontalAdjust = com.sun.star.drawing.TextHorizontalAdjust.LEFT
+	textShape.ParaAdjust = com.sun.star.style.ParagraphAdjust.LEFT
+	textShape.TextAutoGrowHeight = False
+	textShape.Style.TextAutoGrowHeight = False
+	textShape.TextFitToSize = com.sun.star.drawing.TextFitToSizeType.AUTOFIT
+ 	If bannerMode Then
+		textShape.TextVerticalAdjust = com.sun.star.drawing.TextVerticalAdjust.CENTER
+	    textShape.TextLeftDistance = cmToPt(1)
+		textShape.TextRightDistance = cmToPt(1)
+		Dim linespacing90 As New com.sun.star.style.LineSpacing 
+		linespacing90.Mode = com.sun.star.style.LineSpacingMode.PROP
+		linespacing90.Height = 90
+		textShape.ParaLineSpacing = linespacing90
+   	Else
+		textShape.TextVerticalAdjust = com.sun.star.drawing.TextVerticalAdjust.TOP
+	End If
+End Sub
+
+Private Function GetIndexForNewSlideInSection(sectionIndex As Integer) As Integer
+    GetIndexForNewSlideInSection = GetSectionStart(sectionIndex) + GetSectionSlidesCount(sectionIndex) - 1
+End Function
+
+Private Sub DuplicateSlide(fromIndex As Integer, toIndex As Integer)
+	&apos;get original slide
+	Dim origSlide As Object
+	origSlide = ThisComponent.DrawPages.getByIndex(0)
+
+	&apos;duplicate slide
+	Dim clonedSlide As Object
+	Dim clonedIndex As Integer
+	clonedIndex	= fromIndex + 1
+	clonedSlide = ThisComponent.duplicate(ThisComponent.DrawPages.getByIndex(fromIndex))
+	If toIndex&gt;=clonedIndex Then toIndex = toIndex + 1
+	
+	&apos;prepare dispatcher
+	Dim drawController As Object
+	drawController = ThisComponent.CurrentController
+	Dim drawControllerFrame As Object
+	drawControllerFrame = drawController.frame
+	Dim dispatchHelper As Object
+	dispatchHelper = createUnoService(&quot;com.sun.star.frame.DispatchHelper&quot;)
+	
+	&apos;select duplicate
+	ThisComponent.CurrentController.setCurrentPage(clonedSlide)
+	
+	&apos;move duplicate to position
+	If toIndex &gt; clonedIndex Then
+		Do While clonedIndex &lt; toIndex - 1
+				dispatchHelper.executeDispatch(drawControllerFrame, &quot;.uno:MovePageDown&quot;, &quot;&quot;, 0, Array())
+				clonedIndex = clonedIndex + 1
+		Loop
+	ElseIf toIndex &lt; clonedIndex Then
+		Do While clonedIndex &gt; toIndex
+				dispatchHelper.executeDispatch(drawControllerFrame, &quot;.uno:MovePageUp&quot;, &quot;&quot;, 0, Array())
+				clonedIndex = clonedIndex - 1
+		Loop
+	End If
+
+End Sub
+
+Private Function GetSlideIndexInSectionByMarkertag(markertag As String, sectionIndex As Integer) As Integer
+    Dim sectionStartIndex, sectionNum, sectionEndIndex, i As Integer
+    If (sectionIndex &lt; 1) Then
+        GetSlideIndexInSectionByMarkertag = -1
+        Exit Function
+    End If
+    sectionStartIndex = GetSectionStart(sectionIndex)
+    sectionNum = GetSectionSlidesCount(sectionIndex)
+    sectionEndIndex = sectionStartIndex + sectionNum - 1
+	Dim slide As Object
+	Dim foundMarkerName As String
+    For i = sectionStartIndex To sectionEndIndex
+    	slide = ThisComponent.DrawPages.getByIndex(i)
+    	If slide.UserDefinedAttributes.hasByName(&quot;marker&quot;) Then
+    		foundMarkerName = slide.UserDefinedAttributes.getByName(&quot;marker&quot;).Value
+    		If foundMarkerName = markertag Then
+    			GetSlideIndexInSectionByMarkertag = i
+    			Exit Function
+    		End If
+    	End If
+    Next i
+    GetSlideIndexInSectionByMarkertag = -1
+End Function
+
+Private Sub ImportSongFile(inputFile As String, Optional bannerMode As Boolean = True)
+    Dim iFileNum As Integer &apos;file number / handle
+    Dim isUTF As Boolean
+    Dim title(1 To 4) As String &apos;the songs name (in languages, up to langCount or 4)
+    Dim languageSectionIndex(0 To 4) As Integer &apos;created PowerPoint section indexes for 0) mixed language if multiple, 1-4) single languages (used are up to langCount)
+    Dim author As String
+    Dim melody As String
+    Dim translation As String
+    Dim langCount As Integer
+    Dim copyRight As String
+    Dim verseOrder As String
+    Dim songBeamerSongSectionNo As Integer &apos;count alredy processed verses (slides)
+    Dim songSectionMarker As String
+    Dim line As String &apos;the temp read line
+    Dim lineNumInSongSection As Integer
+    Dim arrayOfSlideLangVersions(0 To 4) As String &apos;the concatenated lines of the current song section / verse / slide to build, 0) for mixed, 1) to 4) for single language versions
+    
+    &apos; Get the file name only and test to see if it is open.
+    Dim inputFileOsFormat As String
+    inputFileOsFormat = ConvertFromURL(inputFile)
+    Dim indexLastFileSep As Integer
+    indexLastFileSep  = InStrRev(inputFileOsFormat,  &quot;/&quot;)
+    title(1) = Replace(Right(inputFileOsFormat, Len(inputFileOsFormat) - indexLastFileSep), &quot;.sng&quot;, &quot;&quot;)
+    langCount = 1
+    
+    Dim encoding As String
+    encoding = GetTextFileEncoding(inputFile)
+    
+    iFileNum = FreeFile()
+    Dim simpleFileAccess As Object
+    simpleFileAccess = createUNOService(&quot;com.sun.star.ucb.SimpleFileAccess&quot;)
+    Dim textInputStream As Object
+    textInputStream = createUNOService(&quot;com.sun.star.io.TextInputStream&quot;)
+    textInputStream.setInputStream(simpleFileAccess.openFileRead(inputFile))
+    &apos;Open inputFile For Input As iFileNum
+    textInputStream.setEncoding(encoding)
+    
+    &apos; loop and get song properties until first song section (first line starting with &apos;---&apos;)
+    Do While Not textInputStream.isEOF() &apos;Not EOF(iFileNum)
+     
+        &apos;Line Input #iFileNum, line
+        line = textInputStream.readLine()
+         
+        &apos;exit loop whn first &quot;--&quot; found
+        If InStr(1, line, &quot;--&quot;) Then
+            Exit Do
+        End If
+         
+        &apos;parse property lines
+        testTitle = GetSngPropertyValueOfLine(&quot;Title&quot;, line)
+        If Len(testTitle) &gt; 0 Then
+            title(1) = Trim(testTitle)
+        End If
+        testTitleLang2 = GetSngPropertyValueOfLine(&quot;TitleLang2&quot;, line)
+        If Len(testTitleLang2) &gt; 0 Then
+            title(2) = Trim(testTitleLang2)
+        End If
+        testTitleLang3 = GetSngPropertyValueOfLine(&quot;TitleLang3&quot;, line)
+        If Len(testTitleLang3) &gt; 0 Then
+            title(3) = Trim(testTitleLang3)
+        End If
+        testTitleLang4 = GetSngPropertyValueOfLine(&quot;TitleLang4&quot;, line)
+        If Len(testTitleLang4) &gt; 0 Then
+            title(4) = Trim(testTitleLang4)
+        End If
+        authorTest = GetSngPropertyValueOfLine(&quot;Author&quot;, line)
+        If Len(authorTest) &gt; 0 Then
+            author = Trim(authorTest)
+        End If
+        melodyTest = GetSngPropertyValueOfLine(&quot;Melody&quot;, line)
+        If Len(melodyTest) &gt; 0 Then
+            melody = Trim(melodyTest)
+        End If
+        translationTest = GetSngPropertyValueOfLine(&quot;Translation&quot;, line)
+        If Len(translationTest) &gt; 0 Then
+            translation = Trim(translationTest)
+        End If
+        langCountTest = GetSngPropertyValueOfLine(&quot;LangCount&quot;, line)
+        If Len(langCountTest) &gt; 0 Then
+            langCount = CInt(langCountTest)
+        End If
+        copyRightTest = GetSngPropertyValueOfLine(&quot;(c)&quot;, line)
+        If Len(copyRightTest) &gt; 0 Then
+            copyRight = Trim(copyRightTest)
+        End If
+        verseOrderTest = GetSngPropertyValueOfLine(&quot;VerseOrder&quot;, line)
+        If Len(verseOrderTest) &gt; 0 Then
+            verseOrder = Trim(verseOrderTest)
+        End If
+         
+    Loop
+     
+    &apos;create song title slide
+    Dim propertiesString As String
+    
+    propertiesString = &quot;&quot;
+    If Len(author) &gt; 1 Then
+		If Not (author Like &quot;©*&quot;) And StrComp(author, melody) &lt;&gt; 0 Then
+         	propertiesString = propertiesString &amp; &quot;T) &quot;
+        End If
+        propertiesString = propertiesString &amp; author
+    End If
+    If Len(melody) &gt; 1 And melody &lt;&gt; author Then
+        If Len(propertiesString) &gt; 0 Then propertiesString = propertiesString &amp; &quot;, M) &quot;
+        propertiesString = propertiesString &amp; melody
+    End If
+    If Len(translation) &gt; 1 And translation &lt;&gt; melody And translation &lt;&gt; author Then
+        If Len(propertiesString) &gt; 0 Then
+            propertiesString = propertiesString &amp; &quot;, &quot; &amp; ChrW(220) &amp; &quot;bersetzung &quot;
+        End If
+        propertiesString = propertiesString &amp; translation
+    End If
+    
+    If Len(copyRight) &gt; 1 Then
+        If Len(propertiesString) &gt; 1 Then
+            propertiesString = propertiesString &amp; vbNewLine
+        End If
+        If copyRight Like &quot;©*&quot; Then
+            propertiesString = propertiesString &amp; copyRight
+        Else
+            propertiesString = propertiesString &amp; &quot;©&quot; &amp; copyRight
+        End If
+    End If
+    
+    &apos; create ppt sections and title slides for song language versions
+    If (langCount &gt; 1) Then
+        &apos; version 0 is mixed lang
+        Dim titleText As String
+        titleText = title(1)
+        If Not bannerMode Then
+            For i = 2 To langCount
+                If Len(title(i)) &gt; 0 Then titleText = titleText &amp; vbNewLine &amp; title(i)
+            Next i
+        End If
+        languageSectionIndex(0) = AddNewSongAndTitleSlide(&quot;MultiLang &quot; &amp; title(1), titleText, propertiesString, bannerMode)
+        
+        &apos;if other titles are missing use main title (first lang)
+        If (title(2) = &quot;&quot;) Then title(2) = title(1)
+        If (title(3) = &quot;&quot;) Then title(3) = title(1)
+        If (title(4) = &quot;&quot;) Then title(4) = title(1)
+        
+        For i = 1 To langCount
+            &apos; single languages
+            languageSectionIndex(i) = AddNewSongAndTitleSlide(&quot;Lang &quot; &amp; CStr(i) &amp; &quot; &quot; &amp; title(i), title(i), propertiesString, bannerMode)
+        Next i
+    Else
+        &apos; only one language
+        languageSectionIndex(1) = AddNewSongAndTitleSlide(title(1), title(1), propertiesString, bannerMode)
+    End If
+    
+    
+    songBeamerSongSectionNo = 1
+    lineNumInSongSection = 0
+    songSectionMarker = &quot;&quot;
+    For i = 0 To 4
+        arrayOfSlideLangVersions(i) = &quot;&quot;
+    Next i
+     
+    &apos;iterate song sections (e.g. verses), devided by &quot;--&quot;
+    Do While Not textInputStream.isEOF() &apos;Not EOF(iFileNum)
+     
+        &apos;Line Input #iFileNum, Line
+        line = textInputStream.readLine()
+         
+        asMarker = GetSongSectionMarkerOfLine(line)
+        
+        &apos;ignore commented lines or empty lines befor first line
+        If InStr(1, line, &quot;#H&quot;) Or (Len(line) &lt; 1 And lineNumInSongSection = 0) Then
+             &apos;nothing
+        
+        &apos;parse marker line at beginning of song section
+        ElseIf lineNumInSongSection &lt; 1 And Len(asMarker) &gt; 1 Then
+            songSectionMarker = asMarker
+             
+        &apos;on end of song section create slide
+        ElseIf InStr(1, line, &quot;--&quot;) Then
+            
+            If (langCount &gt; 1) Then &apos; version 0 is mixed lang
+                AddSongSectionSlide arrayOfSlideLangVersions(0), songSectionMarker, GetIndexForNewSlideInSection(languageSectionIndex(0)), bannerMode
+            End If
+            For i = 1 To langCount
+                AddSongSectionSlide arrayOfSlideLangVersions(i), songSectionMarker, GetIndexForNewSlideInSection(languageSectionIndex(i)), bannerMode
+            Next i
+            
+            songBeamerSongSectionNo = songBeamerSongSectionNo + 1
+            lineNumInSongSection = 0
+            songSectionMarker = &quot;&quot;
+            For i = 0 To 4
+                arrayOfSlideLangVersions(i) = &quot;&quot;
+            Next i
+            
+        &apos; ordinaray non-empty line in song section
+        Else
+            Dim langMark0set As Boolean
+            langMark0set = False
+            
+            line = Replace(Replace(line, &quot;&lt;&amp;nbsp&gt;&quot;, ChrW(160)), &quot;&lt;br&gt;&quot;, vbLf)
+            &apos; get number of language by line number and add some indentation for 2nd / 3rd language lines
+             currentLangNum = lineNumInSongSection Mod langCount
+             If line Like &quot;[#][#]#&quot; Then
+                currentLangNum = CInt(currentLangNum = Mid(line, 3, 1)) - 1
+                lineNumInSongSection = currentLangNum
+                line = Right(line, Len(line) - 3)
+             ElseIf InStr(1, line, &quot;##&quot;) Then
+                Dim splitSharp
+                splitSharp = Split(line, &quot;##&quot;)
+                SplitSpace = Split(splitSharp(1), &quot; &quot;)
+                line = Right(splitSharp(1), Len(splitSharp(1)) - Len(SplitSpace(0)) - 1)
+                langMark0set = True
+                If IsNumeric(SplitSpace(0)) Then
+                    currentLangNum = CInt(SplitSpace(0)) - 1
+                    lineNumInSongSection = currentLangNum
+                End If
+             End If
+             lineBreak = vbNewLine
+             If currentLangNum = 1 Then
+                lineBreak = vbNewLine &amp; vbTab
+             ElseIf currentLangNum = 2 Then
+                lineBreak = vbNewLine &amp; vbTab &amp; vbTab
+             End If
+             
+             &apos;always add to multilang version of the slide text
+             arrayOfSlideLangVersions(0) = arrayOfSlideLangVersions(0) &amp; lineBreak &amp; line
+             If langMark0set Or (Len(line) = 4 And line Like &quot;(*x)&quot;) Then
+                For i = 1 To 4
+                    arrayOfSlideLangVersions(i) = arrayOfSlideLangVersions(i) &amp; vbNewLine &amp; line
+                Next i
+             Else
+                &apos;add translation to single lang version of the slide text
+                arrayOfSlideLangVersions(currentLangNum + 1) = arrayOfSlideLangVersions(currentLangNum + 1) &amp; vbNewLine &amp; line
+             End If
+             If Len(line) &gt; 0 Then
+                lineNumInSongSection = lineNumInSongSection + 1
+             End If
+        End If
+         
+    Loop
+    &apos;Close iFileNum
+    textInputStream.closeInput()
+    
+    &apos; add last song section when hitting EOF (will not have a &quot;--&quot; at end)
+    If (langCount &gt; 1) Then &apos; version 0 is mixed lang
+        AddSongSectionSlide arrayOfSlideLangVersions(0), songSectionMarker, GetIndexForNewSlideInSection(languageSectionIndex(0)), bannerMode
+    End If
+    For i = 1 To langCount
+        AddSongSectionSlide arrayOfSlideLangVersions(i), songSectionMarker, GetIndexForNewSlideInSection(languageSectionIndex(i)), bannerMode
+    Next i
+    
+    &apos; sort Slides
+    If Len(verseOrder) &gt; 1 Then
+        Dim markersInVerseOrders As Variant
+        Dim mIdx As Integer &apos;marker iteration index inverseOrder
+        Dim currentMarker As String
+        Dim sectionIdx As Integer
+        Dim originSlideIdxWithCurrentMarker, currentDestSlideIdx As Integer
+        
+        markersInVerseOrders = Split(verseOrder, &quot;,&quot;)
+        
+        &apos;in all language sections
+        Dim firstLangSectionIndex As Integer
+        If (langCount &gt; 1) Then firstLangSectionIndex = 0 Else firstLangSectionIndex = 1
+        
+        For sectionIdx = firstLangSectionIndex To langCount
+            Dim sectionStartIndex, sectionNum, sectionEndIndex As Integer
+        
+            sectionStartIndex = GetSectionStart(languageSectionIndex(sectionIdx))
+            sectionNum = GetSectionSlidesCount(languageSectionIndex(sectionIdx))
+            sectionEndIndex = sectionStartIndex + sectionNum - 1
+            
+            currentDestSlideIdx = sectionStartIndex + sectionNum
+            For mIdx = LBound(markersInVerseOrders) To UBound(markersInVerseOrders)
+                currentMarker = Trim(markersInVerseOrders(mIdx))
+                &apos;get original Slide index with that marker within section
+                originSlideIdxWithCurrentMarker = GetSlideIndexInSectionByMarkertag(currentMarker, languageSectionIndex(sectionIdx))
+                If originSlideIdxWithCurrentMarker &gt; -1 Then
+                	DuplicateSlide originSlideIdxWithCurrentMarker, currentDestSlideIdx
+                    &apos;currentDestSlideIdx = currentDestSlideIdx + 1
+                End If
+                &apos;ActivePresentation.SectionProperties.get
+             Next mIdx
+            &apos;remove original slides in section that were created before verse order sorting
+            Dim slideToRemove As Object
+            For originSlideIdxWithCurrentMarker = sectionEndIndex To sectionStartIndex + 1 Step -1
+            	slideToRemove = ThisComponent.DrawPages.getByIndex(sectionStartIndex + 1)
+            	ThisComponent.DrawPages.remove(slideToRemove)
+            Next originSlideIdxWithCurrentMarker
+            
+        Next sectionIdx
+
+    End If
+ 
+End Sub
+
+Private Function GetUserHomePath() As String
+	If IsMacOrLinuxOrUnix() Then
+		GetUserHomePath = ConvertToUrl( Environ(&quot;HOME&quot;)) 
+	Else
+		GetUserHomePath = ConvertToUrl( Environ(&quot;USERPROFILE&quot;)) &apos;Windows
+	End If
+	Dim ucb as object
+	If Not FileExists(GetUserHomePath) Then GetUserHomePath = Nothing
+End Function
+
+Private Function GetOfficeContainersPath() As String
+	If IsMacOrLinuxOrUnix() Then
+		GetOfficeContainersPath = GetUserHomePath()
+	Else
+		GetOfficeContainersPath = ConvertToUrl( Environ(&quot;APPDATA&quot;)) &apos;Windows
+	End If
+End Function
+ 
+Private Function GetSongBeamerLastSngPath() As String
+    Dim currentDir As String
+    currentDir = CurDir
+
+    Dim propertyFile As String
+    propertyFile = GetOfficeContainersPath() &amp; FileSeparator() &amp; &quot;.songBeamerLastSngPath&quot;
+    
+    Dim iFileNum As Integer
+    iFileNum = FreeFile()
+    
+    Dim storedSongBeamerPath As String
+    
+    On Error GoTo Err
+    Open propertyFile For Input As iFileNum
+        Line Input #iFileNum, storedSongBeamerPath
+    Close iFileNum
+    
+    ChDir storedSongBeamerPath &apos; on error this will continue at err:, else:
+    &apos; if exists return stored path (could cd to the dir without error)
+    GetSongBeamerLastSngPath = storedSongBeamerPath
+    
+Done:
+    ChDir currentDir
+    Exit Function
+    
+Err: &apos; could not open property File, fallback to user home
+    ChDir currentDir
+    GetSongBeamerLastSngPath = GetUserHomePath
+End Function
+ 
+ &apos; https://www.debugpoint.com/2015/01/use-open-file-dialog-using-macro-in-libreofficeopenoffice/
+ &apos; https://documentation.libreoffice.org/assets/Uploads/Documentation/en/MACROS/RefCards/LibOBasic-6-Dialogs-Flat-A4-EN-v103.pdf
+Private Sub SelectSongBeamerFilesAndImport()
+ 
+	Dim defaultPath As String
+    defaultPath = GetSongBeamerLastSngPath()
+    
+   Dim file_dialog as Object
+   Dim selectedFile() As Variant
+   
+   GlobalScope.BasicLibraries.LoadLibrary(&quot;Tools&quot;)
+   
+    file_dialog = CreateUnoService(&quot;com.sun.star.ui.dialogs.OfficeFilePicker&quot;)
+    file_dialog.AppendFilter(  &quot;Songbeamer Songs (*.sng)&quot;, &quot;*.sng&quot;)
+    file_dialog.Title = &quot;SongBeamer *.sng Dateie(n) zum Importieren ausw&quot; &amp; ChrW(228) &amp; &quot;hlen&quot;
+    file_dialog.MultiSelectionMode = True
+	&apos; set default path if exists
+	file_dialog.DisplayDirectory = defaultPath
+	&apos; show dialog and get files
+	If file_dialog.execute = com.sun.star.ui.dialogs.ExecutableDialogResults.OK Then selectedFile = file_dialog.getSelectedFiles()
+    file_dialog.Dispose()
+
+ 	
+ 	Dim str1 As String
+	For i = 0 to Ubound(selectedFile)
+   		str1 = str1 &amp; selectedFile(i) &amp; chr(10) &apos;concat with newline char (10) as delimiter 
+   		ImportSongFile selectedFile(i), True
+   		ImportSongFile selectedFile(i), False
+   	Next
+   	
+	If UBound(selectedFile)&lt;&gt; -1 Then
+		Dim propertyFile As String
+		propertyFile = GetOfficeContainersPath() &amp; FileSeparator() &amp;  &quot;.songBeamerLastSngPath&quot;
+		Dim lastSelectedPath As String
+		lastSelectedPath = Left(selectedFile(0), InStrRev(selectedFile(0), FileSeparator) - 1)
+		Dim oFileNum As Integer
+		oFileNum = FreeFile()
+		
+		Open propertyFile For Output As #oFileNum
+		Print #oFileNum, lastSelectedPath
+		Close #oFileNum
+	End If
+   	
+   	&apos;If Len(str1)&gt; 0 Then MsgBox str1
+ 
+End Sub
+
+Private Function cmToPt(cm As Integer) As Integer
+    cmToPt = 1000 * cm
+End Function
+
+Private Sub InitMasterLayouts()
+
+	&apos; create new impress document if none open
+	If Not HasUnoInterfaces(thisComponent, &quot;com.sun.star.lang.XServiceInfo&quot;) Then
+		StarDesktop.loadComponentFromURL(&quot;private:factory/simpress&quot;, &quot;_blank&quot;, 0, Array())
+	ElseIf Not  thisComponent.supportsService(&quot;com.sun.star.presentation.PresentationDocument&quot;) Then 
+		StarDesktop.loadComponentFromURL(&quot;private:factory/simpress&quot;, &quot;_blank&quot;, 0, Array())
+	End If
+
+start:
+
+	Dim oDoc as Object
+    oDoc = thisComponent
+	
+	Dim fullTextLayout, fullChorusLayout, fullBridgetLayout, bannerTextLayout, bannerChorusLayout, bannerBridgetLayout, bannerTitleLayout As Object
+    Dim textShape As Object
+	Dim fontHeight As Integer
+	fontHeight = 36
+ 	Dim fullTextPos As New com.sun.star.awt.Point
+	Dim fullTextSize As New com.sun.star.awt.Size
+    fullTextPos.x = 1925
+	fullTextPos.y = 854.3632075
+	fullTextSize.Width = 24150
+	fullTextSize.Height = 13599.23349
+	Dim oBackgroundChorus as Object
+	Dim oBackgroundBridge as Object
+    oBackgroundChorus = oDoc.createInstance(&quot;com.sun.star.drawing.Background&quot;)
+    oBackgroundChorus.FillColor = RGB(243, 243, 243)
+    oBackgroundChorus.FillStyle = com.sun.star.drawing.FillStyle.SOLID
+    oBackgroundBridge = oDoc.createInstance(&quot;com.sun.star.drawing.Background&quot;)
+    oBackgroundBridge.FillColor = RGB(205, 255, 255)
+    oBackgroundBridge.FillStyle = com.sun.star.drawing.FillStyle.SOLID
+
+    Set fullTextLayout = GetCustomSlideMasterLayout(&quot;SongBeamerFullText&quot;)
+    If fullTextLayout Is Nothing Then
+    	Set fullTextLayout = oDoc.getMasterPages().insertNewByIndex(oDoc.getMasterPages().getCount())
+        fullTextLayout.Name = &quot;SongBeamerFullText&quot;
+        textShape = oDoc.createInstance(&quot;com.sun.star.presentation.OutlinerShape&quot;)
+        fullTextLayout.add(textShape)
+   End If 
+    textShape =  fullTextLayout.getByIndex(0)
+    textShape.Size = fullTextSize
+	textShape.Position = fullTextPos
+	textShape.CharHeight = fontHeight
+	textShape.setString(fullTextLayout.Name)
+	textShape.TextHorizontalAdjust = com.sun.star.drawing.TextHorizontalAdjust.LEFT
+	textShape.TextVerticalAdjust = com.sun.star.drawing.TextVerticalAdjust.TOP
+	
+	Set fullChorusLayout = GetCustomSlideMasterLayout(&quot;SongBeamerFullChorus&quot;)
+    If fullChorusLayout Is Nothing Then
+    	Set fullChorusLayout = oDoc.getMasterPages().insertNewByIndex(oDoc.getMasterPages().getCount())
+        fullChorusLayout.Name = &quot;SongBeamerFullChorus&quot;
+        textShape = oDoc.createInstance(&quot;com.sun.star.presentation.OutlinerShape&quot;)
+        fullChorusLayout.add(textShape)
+   End If 
+    textShape =  fullChorusLayout.getByIndex(0)
+    textShape.Size = fullTextSize
+	textShape.Position = fullTextPos
+	textShape.CharHeight = fontHeight
+	textShape.setString(fullChorusLayout.Name)
+	fullChorusLayout.Background = oBackgroundChorus
+	textShape.TextHorizontalAdjust = com.sun.star.drawing.TextHorizontalAdjust.LEFT
+	textShape.TextVerticalAdjust = com.sun.star.drawing.TextVerticalAdjust.TOP
+	
+	Set fullBridgeLayout = GetCustomSlideMasterLayout(&quot;SongBeamerFullBridge&quot;)
+    If fullBridgeLayout Is Nothing Then
+    	Set fullBridgeLayout = oDoc.getMasterPages().insertNewByIndex(oDoc.getMasterPages().getCount())
+        fullBridgeLayout.Name = &quot;SongBeamerFullBridge&quot;
+        textShape = oDoc.createInstance(&quot;com.sun.star.presentation.OutlinerShape&quot;)
+         fullBridgeLayout.add(textShape)
+   End If 
+    textShape =   fullBridgeLayout.getByIndex(0)
+    textShape.Size = fullTextSize
+	textShape.Position = fullTextPos
+	textShape.CharHeight = fontHeight
+	textShape.setString(fullBridgeLayout.Name)
+	fullBridgeLayout.Background = oBackgroundBridge
+	textShape.TextHorizontalAdjust = com.sun.star.drawing.TextHorizontalAdjust.LEFT
+	textShape.TextVerticalAdjust = com.sun.star.drawing.TextVerticalAdjust.TOP
+	textShape.ParaAdjust = com.sun.star.style.ParagraphAdjust.LEFT
+	
+	Dim bannerTextPos As New com.sun.star.awt.Point
+	Dim bannerTextSize As New com.sun.star.awt.Size
+	bannerTextPos.x = 0
+	bannerTextPos.y = 300
+	bannerTextSize.Width = fullTextLayout.Width
+	bannerTextSize.Height = (fullTextLayout.Height * 0.28) - 600
+	Dim linespacing09 As New com.sun.star.style.LineSpacing 
+		linespacing09.Mode = com.sun.star.style.LineSpacingMode.PROP
+		linespacing09.Height = 90
+	
+	 Set bannerTextLayout = GetCustomSlideMasterLayout(&quot;SongBeamerBannerText&quot;)
+    If bannerTextLayout Is Nothing Then
+    	Set bannerTextLayout = oDoc.getMasterPages().insertNewByIndex(oDoc.getMasterPages().getCount())
+        bannerTextLayout.Name = &quot;SongBeamerBannerText&quot;
+        textShape = oDoc.createInstance(&quot;com.sun.star.presentation.OutlinerShape&quot;)
+        bannerTextLayout.add(textShape)
+   End If 
+   textShape =  bannerTextLayout.getByIndex(0)
+	textShape.setString(bannerTextLayout.Name)
+   With textShape
+		.Size = bannerTextSize
+		.Position = bannerTextPos
+		.CharHeight = fontHeight
+		.TextLeftDistance = cmToPt(1)
+		.TextRightDistance = cmToPt(1)
+		.TextHorizontalAdjust = com.sun.star.drawing.TextHorizontalAdjust.LEFT
+		.TextVerticalAdjust = com.sun.star.drawing.TextVerticalAdjust.CENTER
+		.ParaAdjust = com.sun.star.style.ParagraphAdjust.LEFT
+	    .TextAutoGrowHeight = False
+		.TextAutoGrowWidth = False
+		.TextFitToSize = com.sun.star.drawing.TextFitToSizeType.AUTOFIT
+		.ParaLineSpacing = linespacing09
+	End With
+	
+	Set bannerChorusLayout = GetCustomSlideMasterLayout(&quot;SongBeamerBannerChorus&quot;)
+    If bannerChorusLayout Is Nothing Then
+    	Set bannerChorusLayout = oDoc.getMasterPages().insertNewByIndex(oDoc.getMasterPages().getCount())
+        bannerChorusLayout.Name = &quot;SongBeamerBannerChorus&quot;
+        textShape = oDoc.createInstance(&quot;com.sun.star.presentation.OutlinerShape&quot;)
+        bannerChorusLayout.add(textShape)
+   End If 
+    textShape =  bannerChorusLayout.getByIndex(0)
+	textShape.setString(bannerChorusLayout.Name)
+	bannerChorusLayout.Background = oBackgroundChorus
+   With textShape
+		.Size = bannerTextSize
+		.Position = bannerTextPos
+		.CharHeight = fontHeight
+		.TextLeftDistance = cmToPt(1)
+		.TextRightDistance = cmToPt(1)
+		.TextHorizontalAdjust = com.sun.star.drawing.TextHorizontalAdjust.LEFT
+		.TextVerticalAdjust = com.sun.star.drawing.TextVerticalAdjust.CENTER
+		.ParaAdjust = com.sun.star.style.ParagraphAdjust.LEFT
+	    .TextAutoGrowHeight = False
+		.TextAutoGrowWidth = False
+		.TextFitToSize = com.sun.star.drawing.TextFitToSizeType.AUTOFIT
+	End With
+	
+	Set bannerBridgeLayout = GetCustomSlideMasterLayout(&quot;SongBeamerBannerBridge&quot;)
+    If bannerBridgeLayout Is Nothing Then
+    	Set bannerBridgeLayout = oDoc.getMasterPages().insertNewByIndex(oDoc.getMasterPages().getCount())
+        bannerBridgeLayout.Name = &quot;SongBeamerBannerBridge&quot;
+        textShape = oDoc.createInstance(&quot;com.sun.star.presentation.OutlinerShape&quot;)
+        bannerBridgeLayout.add(textShape)
+   End If 
+    textShape =   bannerBridgeLayout.getByIndex(0)
+	textShape.setString(bannerBridgeLayout.Name)
+	bannerBridgeLayout.Background = oBackgroundBridge
+	With textShape
+		.Size = bannerTextSize
+		.Position = bannerTextPos
+		.CharHeight = fontHeight
+		.TextLeftDistance = cmToPt(1)
+		.TextRightDistance = cmToPt(1)
+
+		.TextHorizontalAdjust = com.sun.star.drawing.TextHorizontalAdjust.LEFT
+		.TextVerticalAdjust = com.sun.star.drawing.TextVerticalAdjust.CENTER
+		.ParaAdjust = com.sun.star.style.ParagraphAdjust.LEFT
+	    .TextAutoGrowHeight = False
+		.TextAutoGrowWidth = False
+		.TextFitToSize = com.sun.star.drawing.TextFitToSizeType.AUTOFIT
+	End With
+			
+	Dim subtitleShape As Object
+	Set bannerTitleLayout = GetCustomSlideMasterLayout(&quot;SongBeamerBannerTitle&quot;)
+    If bannerTitleLayout Is Nothing Then
+    	Set bannerTitleLayout = oDoc.getMasterPages().insertNewByIndex(oDoc.getMasterPages().getCount())
+        bannerTitleLayout.Name = &quot;SongBeamerBannerTitle&quot;
+        textShape = oDoc.createInstance(&quot;com.sun.star.presentation.TitleTextShape&quot;)
+        bannerTitleLayout.add(textShape)
+        subtitleShape = oDoc.createInstance(&quot;com.sun.star.presentation.OutlinerShape&quot;)
+        bannerTitleLayout.add(subtitleShape)
+   End If 
+    textShape =  bannerTitleLayout.getByIndex(0)
+    bannerTextSize.Height = bannerTextSize.Height * 0.5
+    textShape.Size = bannerTextSize
+	textShape.Position = bannerTextPos
+	textShape.CharHeight = 40
+	textShape.setString(&quot;SongBeamerBannerTitle&quot;)
+	subtitleShape =  bannerTitleLayout.getByIndex(1)
+	subtitleShape.Size = bannerTextSize
+	bannerTextPos.Y = bannerTextPos.Y + bannerTextSize.Height
+	With subtitleShape
+		.Position = bannerTextPos
+		.CharHeight = 20
+		.setString(&quot;Autor and Copyright&quot;)
+		.TextHorizontalAdjust = com.sun.star.drawing.TextHorizontalAdjust.CENTER
+		.TextVerticalAdjust = com.sun.star.drawing.TextVerticalAdjust.CENTER
+		.TextLeftDistance = cmToPt(1)
+	    .TextRightDistance = cmToPt(1)
+	    .TextAutoGrowHeight = False
+		.TextAutoGrowWidth = False
+		.TextFitToSize = com.sun.star.drawing.TextFitToSizeType.AUTOFIT
+    End With
+
+End Sub
+
+&apos;Callback for id_Button_SongBeamer_Import onAction
+Sub ImportSongs()
+    Call InitMasterLayouts
+    Call SelectSongBeamerFilesAndImport
+End Sub
+
+Sub GetPropertiesTest()
+	Dim slide0 As Object
+	Dim shape As Object
+	slide0 = thisComponent.DrawPages.getByIndex(0)
+	Dim propString As String
+	For s = 0 To slide0.getCount() - 1
+		shape = slide0.getByIndex(s)
+		propString = &quot;&quot;
+		For Each prop In shape.getPropertySetInfo.getProperties()
+			On Local Error Resume Next
+			propString = propString &amp; prop.Name &amp; vbTab &amp; prop.Type.Name &amp; vbTab &amp; shape.getPropertyValue(prop.Name) &amp; vbNewLine
+		Next
+		For Each prop In shape.Style.getPropertySetInfo.getProperties()
+			On Local Error Resume Next
+			propString = propString &amp; &quot;Style.&quot; &amp; prop.Name &amp; vbTab &amp; prop.Type.Name &amp; vbTab &amp; shape.getPropertyValue(prop.Name) &amp; vbNewLine
+		Next
+		MsgBox propString
+	Next	
+End Sub
+
+</script:module>
